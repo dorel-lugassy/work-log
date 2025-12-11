@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  web:
+    # Replace YOUR_USERNAME with your actual Docker Hub username
+    image: dorellugassy/work-log-app:latest
+    ports:
+      - "80:80"
+    restart: always
+    # Environment variables are baked into the image during build for Vite,
+    # so they aren't strictly needed here unless you are using them for runtime checks
+    # or if you rebuild the image on the server.
