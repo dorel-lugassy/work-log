@@ -1,6 +1,8 @@
 import { v } from "convex/values";
 import { query } from "./_generated/server";
 
+// Reports queries
+
 export const getDailySummary = query({
     args: {
         date: v.number(), // Start of day timestamp
@@ -56,6 +58,79 @@ export const getDailySummary = query({
         }
 
         return Object.values(jobSummaries);
+    },
+});
+
+export const getMonthlyDailySummary = query({
+    args: {
+        year: v.number(),
+        month: v.number(), // 0-11
+    },
+    handler: async (ctx, args) => {
+        const identity = await ctx.auth.getUserIdentity();
+        if (!identity) {
+            return [];
+        }
+        const startOfMonth = new Date(args.year, args.month, 1).getTime();
+        const endOfMonth = new Date(args.year, args.month + 1, 0, 23, 59, 59, 999).getTime();
+
+        const entries = await ctx.db
+            .query("timeEntries")
+            .withIndex("by_user", (q) => q.eq("userId", identity.subject))
+            .filter((q) =>
+                q.and(
+                    q.gte(q.field("startTime"), startOfMonth),
+                    q.lte(q.field("startTime"), endOfMonth),
+                    q.neq(q.field("endTime"), undefined)
+                )
+            )
+            .collect();
+
+        // Group by date and job
+        const dailySummaries: Record<string, Record<string, {
+            jobId: string;
+            jobName: string;
+            jobColor: string;
+            hourlyRate: number;
+            totalDuration: number;
+            entries: typeof entries;
+        }>> = {};
+
+        for (const entry of entries) {
+            const job = await ctx.db.get(entry.jobId);
+            if (!job) continue;
+
+            // Get the date key (YYYY-MM-DD)
+            const entryDate = new Date(entry.startTime);
+            const dateKey = `${entryDate.getFullYear()}-${String(entryDate.getMonth() + 1).padStart(2, '0')}-${String(entryDate.getDate()).padStart(2, '0')}`;
+
+            if (!dailySummaries[dateKey]) {
+                dailySummaries[dateKey] = {};
+            }
+
+            const jobIdStr = entry.jobId.toString();
+            if (!dailySummaries[dateKey][jobIdStr]) {
+                dailySummaries[dateKey][jobIdStr] = {
+                    jobId: jobIdStr,
+                    jobName: job.name,
+                    jobColor: job.color,
+                    hourlyRate: job.hourlyRate,
+                    totalDuration: 0,
+                    entries: [],
+                };
+            }
+
+            dailySummaries[dateKey][jobIdStr].totalDuration += entry.duration || 0;
+            dailySummaries[dateKey][jobIdStr].entries.push(entry);
+        }
+
+        // Convert to array format with date information
+        const result = Object.entries(dailySummaries).map(([date, jobs]) => ({
+            date,
+            jobs: Object.values(jobs),
+        })).sort((a, b) => a.date.localeCompare(b.date));
+
+        return result;
     },
 });
 

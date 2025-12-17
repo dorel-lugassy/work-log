@@ -32,6 +32,11 @@ interface DailySummary {
     }>
 }
 
+interface MonthlyDailySummary {
+    date: string
+    jobs: DailySummary[]
+}
+
 interface MonthlySummary {
     jobId: string
     jobName: string
@@ -44,10 +49,6 @@ interface MonthlySummary {
 
 export function Reports() {
     const [viewMode, setViewMode] = useState<'daily' | 'monthly'>('daily')
-    const [selectedDate, setSelectedDate] = useState(() => {
-        const now = new Date()
-        return new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    })
     const [selectedMonth, setSelectedMonth] = useState(() => {
         const now = new Date()
         return { year: now.getFullYear(), month: now.getMonth() }
@@ -64,10 +65,10 @@ export function Reports() {
     } | null>(null)
     const [isEditModalOpen, setIsEditModalOpen] = useState(false)
 
-    const dailySummary = useQuery(
-        api.reports.getDailySummary,
-        viewMode === 'daily' ? { date: selectedDate.getTime() } : 'skip'
-    ) as DailySummary[] | undefined
+    const monthlyDailySummary = useQuery(
+        api.reports.getMonthlyDailySummary,
+        viewMode === 'daily' ? { year: selectedMonth.year, month: selectedMonth.month } : 'skip'
+    ) as MonthlyDailySummary[] | undefined
 
     const monthlySummary = useQuery(
         api.reports.getMonthlySummary,
@@ -80,7 +81,7 @@ export function Reports() {
 
     const exportData = useQuery(
         api.reports.getEntriesForExport,
-        viewMode === 'monthly' ? { startDate: startOfMonth, endDate: endOfMonth } : 'skip'
+        { startDate: startOfMonth, endDate: endOfMonth }
     ) as ExportEntry[] | undefined
 
     const formatDuration = (ms: number) => {
@@ -192,11 +193,43 @@ export function Reports() {
     const monthNames = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני',
         'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר']
 
-    const summary = viewMode === 'daily' ? dailySummary : monthlySummary
-    const totalDuration = summary?.reduce((sum: number, s: DailySummary | MonthlySummary) => sum + s.totalDuration, 0) || 0
+    // Calculate totals and grouped jobs for daily view
+    const dailyGroupedJobs = monthlyDailySummary?.reduce((acc, day) => {
+        day.jobs.forEach(job => {
+            if (!acc.jobs[job.jobId]) {
+                acc.jobs[job.jobId] = {
+                    jobId: job.jobId,
+                    jobName: job.jobName,
+                    jobColor: job.jobColor,
+                    hourlyRate: job.hourlyRate,
+                    totalDuration: 0,
+                    entries: []
+                }
+            }
+            acc.jobs[job.jobId].totalDuration += job.totalDuration
+            acc.jobs[job.jobId].entries.push(...job.entries)
+            acc.totalDuration += job.totalDuration
+            acc.totalSalary += (job.totalDuration / 3600000) * job.hourlyRate
+        })
+        return acc
+    }, {
+        totalDuration: 0,
+        totalSalary: 0,
+        jobs: {} as Record<string, DailySummary>
+    })
+
+    const summary = viewMode === 'daily'
+        ? (dailyGroupedJobs ? Object.values(dailyGroupedJobs.jobs) : [])
+        : monthlySummary
+    const totalDuration = viewMode === 'daily'
+        ? (dailyGroupedJobs?.totalDuration || 0)
+        : (monthlySummary?.reduce((sum: number, s: MonthlySummary) => sum + s.totalDuration, 0) || 0)
     const totalSalaryAmount = viewMode === 'monthly'
         ? (monthlySummary?.reduce((sum: number, s: MonthlySummary) => sum + s.totalSalary, 0) || 0)
-        : (dailySummary?.reduce((sum: number, s: DailySummary) => sum + (s.totalDuration / 3600000) * s.hourlyRate, 0) || 0)
+        : (dailyGroupedJobs?.totalSalary || 0)
+    const jobsCount = viewMode === 'daily'
+        ? (dailyGroupedJobs ? Object.keys(dailyGroupedJobs.jobs).length : 0)
+        : (monthlySummary?.length || 0)
 
     return (
         <div>
@@ -226,15 +259,39 @@ export function Reports() {
             {/* Date Selection */}
             <div className="date-filter">
                 {viewMode === 'daily' ? (
-                    <div className="form-group">
-                        <label className="form-label">בחר תאריך</label>
-                        <input
-                            type="date"
-                            className="form-input"
-                            value={selectedDate.toISOString().split('T')[0]}
-                            onChange={e => setSelectedDate(new Date(e.target.value))}
-                        />
-                    </div>
+                    <>
+                        <div className="form-group">
+                            <label className="form-label">חודש</label>
+                            <select
+                                className="form-input"
+                                value={selectedMonth.month}
+                                onChange={e => setSelectedMonth(prev => ({ ...prev, month: Number(e.target.value) }))}
+                            >
+                                {monthNames.map((name, index) => (
+                                    <option key={index} value={index}>{name}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">שנה</label>
+                            <select
+                                className="form-input"
+                                value={selectedMonth.year}
+                                onChange={e => setSelectedMonth(prev => ({ ...prev, year: Number(e.target.value) }))}
+                            >
+                                {[2023, 2024, 2025, 2026].map(year => (
+                                    <option key={year} value={year}>{year}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label">&nbsp;</label>
+                            <button className="btn btn-success" onClick={handleExport}>
+                                <Download size={18} />
+                                ייצא לאקסל
+                            </button>
+                        </div>
+                    </>
                 ) : (
                     <>
                         <div className="form-group">
@@ -283,7 +340,7 @@ export function Reports() {
                     <div className="stat-label">סה"כ שכר</div>
                 </div>
                 <div className="stat-card">
-                    <div className="stat-value">{summary?.length || 0}</div>
+                    <div className="stat-value">{jobsCount}</div>
                     <div className="stat-label">עבודות</div>
                 </div>
             </div>
@@ -336,75 +393,97 @@ export function Reports() {
                 )}
             </section>
 
-            {/* Detailed Entries Table for Daily View */}
-            {viewMode === 'daily' && dailySummary && dailySummary.length > 0 && (
+            {/* Detailed Entries Table for Daily View - Grouped by Day */}
+            {viewMode === 'daily' && monthlyDailySummary && monthlyDailySummary.length > 0 && (
                 <section className="mt-lg">
                     <div className="section-header">
-                        <h2 className="section-title">פירוט משמרות</h2>
+                        <h2 className="section-title">פירוט משמרות לפי ימים</h2>
                     </div>
-                    <div className="table-container">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>עבודה</th>
-                                    <th>שעת כניסה</th>
-                                    <th>שעת יציאה</th>
-                                    <th>משך</th>
-                                    <th>שכר</th>
-                                    <th>פעולות</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {dailySummary.flatMap((job: DailySummary) =>
-                                    job.entries.map((entry) => {
-                                        const start = new Date(entry.startTime)
-                                        const end = entry.endTime ? new Date(entry.endTime) : null
-                                        const duration = entry.duration || 0
-                                        const salary = (duration / 3600000) * job.hourlyRate
+                    {monthlyDailySummary.map((dayData) => {
+                        const dateObj = new Date(dayData.date)
+                        const formattedDate = dateObj.toLocaleDateString('he-IL', {
+                            weekday: 'long',
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric'
+                        })
 
-                                        return (
-                                            <tr key={entry._id}>
-                                                <td>
-                                                    <div className="flex gap-sm" style={{ alignItems: 'center' }}>
-                                                        <div style={{
-                                                            width: '8px',
-                                                            height: '8px',
-                                                            borderRadius: '50%',
-                                                            backgroundColor: job.jobColor
-                                                        }} />
-                                                        {job.jobName}
-                                                    </div>
-                                                </td>
-                                                <td>{start.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}</td>
-                                                <td>{end ? end.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }) : '-'}</td>
-                                                <td>{formatDuration(duration)}</td>
-                                                <td>{formatCurrency(salary)}</td>
-                                                <td>
-                                                    <div className="flex gap-sm justify-end">
-                                                        <button
-                                                            className="btn btn-icon btn-ghost"
-                                                            onClick={() => handleEditClick(entry)}
-                                                            title="ערוך"
-                                                        >
-                                                            <Edit2 size={16} />
-                                                        </button>
-                                                        <button
-                                                            className="btn btn-icon btn-ghost"
-                                                            style={{ color: 'var(--color-danger)' }}
-                                                            onClick={() => handleDelete(entry._id as Id<"timeEntries">)}
-                                                            title="מחק"
-                                                        >
-                                                            <Trash2 size={16} />
-                                                        </button>
-                                                    </div>
-                                                </td>
+                        return (
+                            <div key={dayData.date} className="mb-lg">
+                                <h3 style={{
+                                    fontSize: '1.25rem',
+                                    fontWeight: '600',
+                                    marginBottom: 'var(--spacing-md)',
+                                    color: 'var(--color-text-primary)'
+                                }}>
+                                    {formattedDate}
+                                </h3>
+                                <div className="table-container">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>עבודה</th>
+                                                <th>שעת כניסה</th>
+                                                <th>שעת יציאה</th>
+                                                <th>משך</th>
+                                                <th>שכר</th>
+                                                <th>פעולות</th>
                                             </tr>
-                                        )
-                                    })
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
+                                        </thead>
+                                        <tbody>
+                                            {dayData.jobs.flatMap((job: DailySummary) =>
+                                                job.entries.map((entry) => {
+                                                    const start = new Date(entry.startTime)
+                                                    const end = entry.endTime ? new Date(entry.endTime) : null
+                                                    const duration = entry.duration || 0
+                                                    const salary = (duration / 3600000) * job.hourlyRate
+
+                                                    return (
+                                                        <tr key={entry._id}>
+                                                            <td>
+                                                                <div className="flex gap-sm" style={{ alignItems: 'center' }}>
+                                                                    <div style={{
+                                                                        width: '8px',
+                                                                        height: '8px',
+                                                                        borderRadius: '50%',
+                                                                        backgroundColor: job.jobColor
+                                                                    }} />
+                                                                    {job.jobName}
+                                                                </div>
+                                                            </td>
+                                                            <td>{start.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}</td>
+                                                            <td>{end ? end.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }) : '-'}</td>
+                                                            <td>{formatDuration(duration)}</td>
+                                                            <td>{formatCurrency(salary)}</td>
+                                                            <td>
+                                                                <div className="flex gap-sm justify-end">
+                                                                    <button
+                                                                        className="btn btn-icon btn-ghost"
+                                                                        onClick={() => handleEditClick(entry)}
+                                                                        title="ערוך"
+                                                                    >
+                                                                        <Edit2 size={16} />
+                                                                    </button>
+                                                                    <button
+                                                                        className="btn btn-icon btn-ghost"
+                                                                        style={{ color: 'var(--color-danger)' }}
+                                                                        onClick={() => handleDelete(entry._id as Id<"timeEntries">)}
+                                                                        title="מחק"
+                                                                    >
+                                                                        <Trash2 size={16} />
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    )
+                                                })
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )
+                    })}
                 </section>
             )}
             {/* Edit Modal */}
